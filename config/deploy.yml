@@ -1,0 +1,110 @@
+# Name of your application. Used to uniquely configure containers.
+service: lista
+
+# Nome da imagem (use seu-usuario/nome-app em registries externos).
+image: seu-usuario-dockerhub/lista
+
+# Deploy to these servers.
+# Troque pelo IP público (Elastic IP) da sua instância EC2.
+servers:
+  web:
+    - 203.0.113.10
+  # job:
+  #   hosts:
+  #     - 203.0.113.10
+  #   cmd: bin/jobs
+
+# Certificado SSL automático via Let's Encrypt. Descomente e aponte um domínio
+# para o IP da EC2 quando tiver um. Sem domínio, o app responde via HTTP no IP.
+#
+# proxy:
+#   ssl: true
+#   host: app.seudominio.com.br
+
+# Onde ficam as imagens Docker. Usando Docker Hub por padrão.
+# Troque "seu-usuario-dockerhub" pelo seu usuário e ajuste a imagem abaixo.
+registry:
+  # Alternativas: ghcr.io / registry.digitalocean.com / <account>.dkr.ecr.<region>.amazonaws.com
+  server: docker.io
+  username: seu-usuario-dockerhub
+
+  # Use sempre um access token, nunca a senha real. Vem de .kamal/secrets.
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+# Variáveis de ambiente injetadas nos containers (secrets vêm de .kamal/secrets).
+env:
+  secret:
+    - RAILS_MASTER_KEY
+    - LISTA_DATABASE_PASSWORD
+  clear:
+    # Roda o Solid Queue dentro do processo Puma (jobs em background).
+    SOLID_QUEUE_IN_PUMA: true
+
+    # Host do banco: nome do container do acessório "db" na rede docker do Kamal.
+    # Padrão do Kamal: <service>-<accessory> => lista-db
+    DB_HOST: lista-db
+
+    # Set number of cores available to the application on each server (default: 1).
+    # WEB_CONCURRENCY: 2
+
+    # Log everything from Rails
+    # RAILS_LOG_LEVEL: debug
+
+# Aliases are triggered with "bin/kamal <alias>". You can overwrite arguments on invocation:
+# "bin/kamal logs -r job" will tail logs from the first server in the job section.
+aliases:
+  console: app exec --interactive --reuse "bin/rails console"
+  shell: app exec --interactive --reuse "bash"
+  logs: app logs -f
+  dbc: app exec --interactive --reuse "bin/rails dbconsole --include-password"
+
+# Use a persistent storage volume for sqlite database files and local Active Storage files.
+# Recommended to change this to a mounted volume path that is backed up off server.
+volumes:
+  - "lista_storage:/rails/storage"
+
+# Bridge fingerprinted assets, like JS and CSS, between versions to avoid
+# hitting 404 on in-flight requests. Combines all files from new and old
+# version inside the asset_path.
+asset_path: /rails/public/assets
+
+# Configure the image builder.
+builder:
+  arch: amd64
+
+  # # Build image via remote server (useful for faster amd64 builds on arm64 computers)
+  # remote: ssh://docker@docker-builder-server
+  #
+  # # Pass arguments and secrets to the Docker build process
+  # args:
+  #   RUBY_VERSION: ruby-3.4.9
+  # secrets:
+  #   - GITHUB_TOKEN
+  #   - RAILS_MASTER_KEY
+
+# Use a different ssh user than root
+# ssh:
+#   user: app
+
+# Serviços acessórios. Aqui roda o PostgreSQL como container Docker na mesma EC2.
+# (Secrets vêm de .kamal/secrets.)
+accessories:
+  db:
+    image: postgres:16
+    # Mesmo servidor da aplicação. Troque pelo IP se usar máquina dedicada.
+    host: 203.0.113.10
+    # Expõe a porta só no localhost do servidor (não fica aberta à internet).
+    port: "127.0.0.1:5432:5432"
+    env:
+      clear:
+        POSTGRES_USER: lista
+        POSTGRES_DB: lista_production
+      secret:
+        - POSTGRES_PASSWORD
+    files:
+      # Cria os bancos extras usados pelo Solid Cache/Queue/Cable no primeiro boot.
+      - db/production_init.sql:/docker-entrypoint-initdb.d/setup.sql
+    directories:
+      # Dados persistidos em volume no servidor (sobrevivem a redeploys).
+      - data:/var/lib/postgresql/data
