@@ -1,0 +1,105 @@
+name: ci-cd-lista
+
+# Mesma lógica do backend registro-atividades:
+#   1) roda os testes
+#   2) builda e publica a imagem Docker no Docker Hub (tags: latest + SHA)
+#   3) atualiza o repositório GitOps (kustomize) -> o ArgoCD sincroniza no cluster
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lista_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      RAILS_ENV: test
+      DB_HOST: localhost
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Preparar banco de teste
+        run: bin/rails db:prepare
+
+      - name: Smoke test (boot da aplicação)
+        run: bin/rails runner "puts 'App carregou OK: Tarefa.count=' + Tarefa.count.to_s"
+      # - run: bin/rails test   # descomente quando adicionar testes
+
+  build-and-push:
+    needs: tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set metadata
+        id: meta
+        run: echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/lista:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/lista:${{ steps.meta.outputs.image_tag }}
+
+  update-gitops:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v2
+
+      - name: Update image tag in kustomization
+        run: |
+          cd gitops/k8s
+          kustomize edit set image \
+            ${{ secrets.DOCKERHUB_USERNAME }}/lista=${{ secrets.DOCKERHUB_USERNAME }}/lista:${{ needs.build-and-push.outputs.image_tag }}
+
+      - name: Commit and push
+        run: |
+          cd gitops
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add .
+          git commit -m "chore: update lista image tag to ${{ needs.build-and-push.outputs.image_tag }}" || echo "No changes to commit"
+          git push
