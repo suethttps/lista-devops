@@ -43,7 +43,7 @@ jobs:
         run: bin/rails db:prepare
 
       - name: Smoke test (boot da aplicação)
-        run: bin/rails runner "puts 'App carregou OK: Tarefa.count=' + Tarefa.count.to_s"
+        run: bin/rails runner "puts 'App carregou OK - tarefas=' + Tarefa.count.to_s"
       # - run: bin/rails test   # descomente quando adicionar testes
 
   build-and-push:
